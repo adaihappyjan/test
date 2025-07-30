@@ -1,0 +1,9 @@
+{
+  "name": "frontend-showcase",
+  "version": "1.0.0",
+  "description": "演示应用",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"尚未编写测试\" && exit 0"
+  }
+}
