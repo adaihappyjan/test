@@ -1,0 +1,61 @@
+/* 样式表 */
+:root {
+    --bg-color: #ffffff;
+    --text-color: #222222;
+    --accent-color: #007acc;
+}
+
+[data-theme="dark"] {
+    --bg-color: #222222;
+    --text-color: #eeeeee;
+    --accent-color: #66aaff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    transition: background-color 0.3s, color 0.3s;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem;
+    background-color: var(--accent-color);
+    color: #fff;
+}
+
+button {
+    background-color: #fff;
+    color: var(--accent-color);
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+button:hover {
+    background-color: var(--accent-color);
+    color: #fff;
+}
+
+main {
+    padding: 2rem;
+}
+
+.intro {
+    animation: fadeIn 1s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
