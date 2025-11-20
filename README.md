@@ -21,6 +21,13 @@ pyinstaller --noconsole --onefile --name NeonGroove music_player.py
 
 生成的 `dist/NeonGroove.exe` 即可分发使用。
 
+### 直接从 GitHub 下载 exe
+
+仓库已内置 GitHub Actions 工作流，会在拉取请求和 main 分支推送时自动构建 `NeonGroove.exe` 并上传为构件。
+
+1. 打开仓库的 **Actions** 页面，选择最新的 "Build Windows EXE" 工作流运行。
+2. 在运行详情底部找到 **Artifacts**，点击 `NeonGroove-exe` 即可下载构建好的 `NeonGroove.exe`。
+
 ## 功能特性
 - 支持 MP3/WAV/OGG/FLAC 导入，自动建立播放列表
 - 播放、暂停/继续、停止、上一曲、下一曲
