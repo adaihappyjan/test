@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      WINDOWS_CODESIGN_CERT_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_BASE64 }}
+      WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,6 +31,28 @@ jobs:
       - name: Build EXE with PyInstaller
         run: |
           pyinstaller --noconsole --onefile --add-data "ui;ui" --name NeonGroove music_player.py
+
+      - name: Decode code signing certificate
+        if: env.WINDOWS_CODESIGN_CERT_BASE64 != ''
+        env:
+          WINDOWS_CODESIGN_CERT_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_BASE64 }}
+        run: |
+          $bytes = [System.Convert]::FromBase64String("$env:WINDOWS_CODESIGN_CERT_BASE64")
+          Set-Content -Path signing-cert.pfx -Value $bytes -Encoding Byte
+
+      - name: Sign executable (optional)
+        if: env.WINDOWS_CODESIGN_CERT_BASE64 != ''
+        env:
+          WINDOWS_CODESIGN_CERT_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_BASE64 }}
+          WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
+        run: |
+          signtool sign `
+            /fd sha256 `
+            /td sha256 `
+            /tr http://timestamp.digicert.com `
+            /f signing-cert.pfx `
+            /p "$env:WINDOWS_CODESIGN_CERT_PASSWORD" `
+            dist/NeonGroove.exe
 
       - name: Bundle artifact
         run: |
