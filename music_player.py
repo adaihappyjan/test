@@ -1,218 +1,287 @@
-import os
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from __future__ import annotations
+
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import mutagen
 import pygame
+import webview
+
+SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a"}
 
 
-class MusicPlayer:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title("NeonGroove - 音乐播放器")
-        self.root.geometry("720x480")
-        self.root.configure(bg="#0f1620")
-        self.root.minsize(640, 420)
+@dataclass
+class Track:
+    path: Path
+    title: str
+    duration: float
 
+
+class PlayerCore:
+    def __init__(self) -> None:
         pygame.mixer.init()
-        self.playlist: list[str] = []
-        self.current_index = -1
+        self.playlist: list[Track] = []
+        self.current_index: int = -1
         self.paused = False
+        self.volume = 0.75
         self.track_length = 0.0
+        self._pause_position = 0.0
+        self._lock = threading.Lock()
+        self._running = True
+        self._started = False
+        pygame.mixer.music.set_volume(self.volume)
+        self._watcher = threading.Thread(target=self._watch_playback, daemon=True)
+        self._watcher.start()
 
-        self._build_ui()
-        self._start_progress_timer()
+    def load_folder(self, folder: str) -> list[dict[str, Any]]:
+        folder_path = Path(folder)
+        if not folder_path.is_dir():
+            return []
 
-    def _build_ui(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TFrame", background="#0f1620")
-        style.configure("TLabel", background="#0f1620", foreground="#e5e5e5", font=("Segoe UI", 11))
-        style.configure("TButton", background="#1f2937", foreground="#e5e5e5", padding=8, font=("Segoe UI", 11))
-        style.map("TButton", background=[("active", "#2563eb")])
-        style.configure("Horizontal.TScale", background="#0f1620")
+        tracks: list[Track] = []
+        for entry in sorted(folder_path.iterdir()):
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            title, duration = self._read_metadata(entry)
+            tracks.append(Track(path=entry, title=title, duration=duration))
 
-        header = ttk.Frame(self.root)
-        header.pack(fill=tk.X, padx=16, pady=(14, 8))
-        ttk.Label(header, text="NeonGroove - 氛围感音乐播放器", font=("Segoe UI", 16, "bold"), foreground="#60a5fa").pack(side=tk.LEFT)
+        with self._lock:
+            self.playlist = tracks
+            self.current_index = 0 if tracks else -1
+            self._pause_position = 0.0
 
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+        return self.serialize_playlist()
 
-        playlist_frame = ttk.Frame(main_frame)
-        playlist_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        ttk.Label(playlist_frame, text="播放列表").pack(anchor=tk.W)
-        self.playlist_box = tk.Listbox(
-            playlist_frame,
-            bg="#111827",
-            fg="#e5e5e5",
-            selectbackground="#2563eb",
-            selectforeground="#ffffff",
-            activestyle="none",
-            font=("Consolas", 11),
-        )
-        self.playlist_box.pack(fill=tk.BOTH, expand=True, padx=(0, 10), pady=(8, 0))
+    def serialize_playlist(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": idx,
+                "title": track.title,
+                "filename": track.path.name,
+                "duration": track.duration,
+            }
+            for idx, track in enumerate(self.playlist)
+        ]
 
-        controls_frame = ttk.Frame(main_frame)
-        controls_frame.pack(side=tk.RIGHT, fill=tk.Y)
+    def play(self, index: int | None = None) -> bool:
+        with self._lock:
+            if index is not None:
+                if not 0 <= index < len(self.playlist):
+                    return False
+                self.current_index = index
 
-        ttk.Label(controls_frame, text="播放控制").pack(anchor=tk.W)
-        buttons = ttk.Frame(controls_frame)
-        buttons.pack(fill=tk.X, pady=8)
+            if not self.playlist or self.current_index < 0:
+                return False
 
-        ttk.Button(buttons, text="▶ 播放", command=self.play_selected).grid(row=0, column=0, padx=4, pady=4, sticky=tk.EW)
-        ttk.Button(buttons, text="⏸ 暂停/继续", command=self.pause_resume).grid(row=0, column=1, padx=4, pady=4, sticky=tk.EW)
-        ttk.Button(buttons, text="⏹ 停止", command=self.stop).grid(row=1, column=0, padx=4, pady=4, sticky=tk.EW)
-        ttk.Button(buttons, text="⏮ 上一曲", command=self.prev_track).grid(row=1, column=1, padx=4, pady=4, sticky=tk.EW)
-        ttk.Button(buttons, text="⏭ 下一曲", command=self.next_track).grid(row=2, column=0, padx=4, pady=4, sticky=tk.EW)
-        ttk.Button(buttons, text="➕ 添加音频", command=self.add_files).grid(row=2, column=1, padx=4, pady=4, sticky=tk.EW)
-        ttk.Button(buttons, text="➖ 移除选中", command=self.remove_selected).grid(row=3, column=0, padx=4, pady=4, sticky=tk.EW)
-
-        for i in range(2):
-            buttons.columnconfigure(i, weight=1)
-
-        ttk.Label(controls_frame, text="进度").pack(anchor=tk.W, pady=(12, 2))
-        self.progress = tk.DoubleVar(value=0)
-        self.progress_scale = ttk.Scale(controls_frame, variable=self.progress, from_=0, to=100, command=self._seek)
-        self.progress_scale.pack(fill=tk.X)
-
-        self.time_label = ttk.Label(controls_frame, text="00:00 / 00:00", font=("Segoe UI", 10))
-        self.time_label.pack(anchor=tk.W, pady=(4, 10))
-
-        ttk.Label(controls_frame, text="音量").pack(anchor=tk.W, pady=(8, 2))
-        self.volume = tk.DoubleVar(value=0.7)
-        self.volume_scale = ttk.Scale(controls_frame, variable=self.volume, from_=0, to=1, orient=tk.HORIZONTAL, command=self._set_volume)
-        self.volume_scale.pack(fill=tk.X)
-        pygame.mixer.music.set_volume(self.volume.get())
-
-    def add_files(self) -> None:
-        files = filedialog.askopenfilenames(
-            filetypes=[("音频文件", "*.mp3 *.wav *.ogg *.flac"), ("所有文件", "*.*")]
-        )
-        if not files:
-            return
-        for fpath in files:
-            if fpath not in self.playlist:
-                self.playlist.append(fpath)
-                self.playlist_box.insert(tk.END, os.path.basename(fpath))
-
-    def remove_selected(self) -> None:
-        selection = list(self.playlist_box.curselection())
-        if not selection:
-            return
-        for index in reversed(selection):
-            del self.playlist[index]
-            self.playlist_box.delete(index)
-        if self.current_index >= len(self.playlist):
-            self.current_index = len(self.playlist) - 1
-
-    def play_selected(self) -> None:
-        selection = self.playlist_box.curselection()
-        if selection:
-            self.current_index = selection[0]
-        if not self.playlist or self.current_index == -1:
-            messagebox.showinfo("提示", "请先添加音频并选择一首曲目")
-            return
-        self._play_track(self.current_index)
-
-    def _play_track(self, index: int) -> None:
-        track = self.playlist[index]
-        try:
-            pygame.mixer.music.load(track)
+            track = self.playlist[self.current_index]
+            pygame.mixer.music.load(track.path.as_posix())
             pygame.mixer.music.play()
+            pygame.mixer.music.set_volume(self.volume)
+            self.track_length = track.duration
             self.paused = False
-            self._update_track_length(track)
-            self._highlight_current()
-        except pygame.error as exc:
-            messagebox.showerror("无法播放", f"加载 {os.path.basename(track)} 失败:\n{exc}")
+            self._pause_position = 0.0
+            self._started = True
+        return True
 
-    def pause_resume(self) -> None:
-        if pygame.mixer.music.get_busy():
+    def toggle_pause(self) -> None:
+        with self._lock:
+            if self.current_index == -1:
+                return
             if self.paused:
                 pygame.mixer.music.unpause()
                 self.paused = False
+                self._started = True
             else:
+                elapsed_ms = pygame.mixer.music.get_pos()
+                if elapsed_ms >= 0:
+                    self._pause_position = elapsed_ms / 1000.0
                 pygame.mixer.music.pause()
                 self.paused = True
 
     def stop(self) -> None:
-        pygame.mixer.music.stop()
-        self.paused = False
-        self.progress.set(0)
-        self.time_label.config(text="00:00 / 00:00")
-
-    def next_track(self) -> None:
-        if not self.playlist:
-            return
-        self.current_index = (self.current_index + 1) % len(self.playlist)
-        self._play_track(self.current_index)
-
-    def prev_track(self) -> None:
-        if not self.playlist:
-            return
-        self.current_index = (self.current_index - 1) % len(self.playlist)
-        self._play_track(self.current_index)
-
-    def _highlight_current(self) -> None:
-        self.playlist_box.selection_clear(0, tk.END)
-        if self.current_index != -1:
-            self.playlist_box.selection_set(self.current_index)
-            self.playlist_box.see(self.current_index)
-
-    def _update_track_length(self, track: str) -> None:
-        try:
-            audio = mutagen.File(track)
-            self.track_length = float(getattr(audio, "info", None).length or 0)
-        except Exception:
-            self.track_length = 0.0
-        self.progress.set(0)
-        self._update_time_label(0)
-
-    def _seek(self, _value: str) -> None:
-        if self.track_length <= 0:
-            return
-        position = self.progress.get() / 100 * self.track_length
-        try:
-            pygame.mixer.music.play(start=position)
-            pygame.mixer.music.set_volume(self.volume.get())
-            if self.current_index == -1 and self.playlist:
-                self.current_index = 0
+        with self._lock:
+            pygame.mixer.music.stop()
             self.paused = False
-        except pygame.error:
-            pass
+            self._pause_position = 0.0
+            self._started = False
 
-    def _set_volume(self, _value: str) -> None:
-        pygame.mixer.music.set_volume(self.volume.get())
+    def next_track(self) -> bool:
+        return self._advance(1)
 
-    def _start_progress_timer(self) -> None:
-        self._update_progress()
+    def prev_track(self) -> bool:
+        return self._advance(-1)
 
-    def _update_progress(self) -> None:
-        if pygame.mixer.music.get_busy() and not self.paused and self.track_length > 0:
+    def _advance(self, step: int) -> bool:
+        with self._lock:
+            if not self.playlist:
+                return False
+            self.current_index = (self.current_index + step) % len(self.playlist)
+            track = self.playlist[self.current_index]
+            pygame.mixer.music.load(track.path.as_posix())
+            pygame.mixer.music.play()
+            pygame.mixer.music.set_volume(self.volume)
+            self.track_length = track.duration
+            self.paused = False
+            self._pause_position = 0.0
+            self._started = True
+        return True
+
+    def set_volume(self, value: float) -> float:
+        with self._lock:
+            self.volume = max(0.0, min(1.0, value))
+            pygame.mixer.music.set_volume(self.volume)
+            return self.volume
+
+    def seek(self, percent: float) -> None:
+        with self._lock:
+            if self.current_index == -1 or self.track_length <= 0:
+                return
+            percent = max(0.0, min(100.0, percent))
+            position = percent / 100.0 * self.track_length
+            pygame.mixer.music.play(start=position)
+            pygame.mixer.music.set_volume(self.volume)
+            self.paused = False
+            self._pause_position = position
+            self._started = True
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            elapsed = self._pause_position
             elapsed_ms = pygame.mixer.music.get_pos()
-            if elapsed_ms >= 0:
+            if elapsed_ms >= 0 and not self.paused:
                 elapsed = elapsed_ms / 1000.0
-                if elapsed >= self.track_length - 0.5:
-                    self.next_track()
-                else:
-                    percent = min(100, (elapsed / self.track_length) * 100)
-                    self.progress.set(percent)
-                    self._update_time_label(elapsed)
-        self.root.after(300, self._update_progress)
+                self._pause_position = elapsed
 
-    def _update_time_label(self, elapsed: float) -> None:
-        def fmt(seconds: float) -> str:
-            minutes = int(seconds // 60)
-            secs = int(seconds % 60)
-            return f"{minutes:02d}:{secs:02d}"
+            percent = 0.0
+            if self.track_length > 0:
+                percent = min(100.0, (elapsed / self.track_length) * 100)
 
-        self.time_label.config(text=f"{fmt(elapsed)} / {fmt(self.track_length)}")
+            current = self.playlist[self.current_index] if self.current_index != -1 else None
+            return {
+                "playing": bool(self.playlist) and self._started and not self.paused,
+                "paused": self.paused,
+                "progress": percent,
+                "elapsed": elapsed,
+                "duration": self.track_length,
+                "current_index": self.current_index,
+                "current_title": current.title if current else "",
+                "playlist_size": len(self.playlist),
+                "volume": self.volume,
+            }
+
+    def shutdown(self) -> None:
+        self._running = False
+        self._watcher.join(timeout=1.0)
+        pygame.mixer.music.stop()
+        pygame.mixer.quit()
+
+    def _watch_playback(self) -> None:
+        while self._running:
+            time.sleep(0.4)
+            with self._lock:
+                if not self.playlist or not self._started or self.paused:
+                    continue
+                if not pygame.mixer.music.get_busy() and self.track_length > 0:
+                    self._advance(1)
+
+    def _read_metadata(self, path: Path) -> tuple[str, float]:
+        title = path.stem
+        duration = 0.0
+        try:
+            audio = mutagen.File(path)
+            if audio is not None:
+                duration = float(getattr(audio, "info", None).length or 0.0)
+                if getattr(audio, "tags", None):
+                    for key in ("TIT2", "TITLE", "title", "\u00a9nam"):
+                        if key in audio.tags:
+                            raw = audio.tags[key]
+                            try:
+                                title = str(raw.text[0]) if hasattr(raw, "text") else str(raw[0])
+                            except Exception:
+                                title = str(raw)
+                            break
+        except Exception:
+            pass
+        return title, duration
+
+
+def resource_path(*parts: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return base.joinpath(*parts)
+
+
+class WebAPI:
+    def __init__(self, player: PlayerCore) -> None:
+        self.player = player
+        self.current_folder = ""
+
+    def choose_folder(self) -> dict[str, Any]:
+        selection = webview.create_file_dialog(webview.FOLDER_DIALOG)
+        if selection:
+            self.current_folder = selection[0]
+            tracks = self.player.load_folder(self.current_folder)
+        else:
+            tracks = self.player.serialize_playlist()
+        return {"folder": self.current_folder, "tracks": tracks, "status": self.player.status()}
+
+    def get_tracks(self) -> dict[str, Any]:
+        return {"folder": self.current_folder, "tracks": self.player.serialize_playlist()}
+
+    def play(self, index: int) -> dict[str, Any]:
+        ok = self.player.play(index)
+        return {"ok": ok, "status": self.player.status()}
+
+    def toggle_pause(self) -> dict[str, Any]:
+        self.player.toggle_pause()
+        return self.player.status()
+
+    def stop(self) -> dict[str, Any]:
+        self.player.stop()
+        return self.player.status()
+
+    def next(self) -> dict[str, Any]:
+        self.player.next_track()
+        return self.player.status()
+
+    def prev(self) -> dict[str, Any]:
+        self.player.prev_track()
+        return self.player.status()
+
+    def set_volume(self, value: float) -> dict[str, Any]:
+        volume = self.player.set_volume(value)
+        return {"volume": volume}
+
+    def seek(self, percent: float) -> dict[str, Any]:
+        self.player.seek(percent)
+        return self.player.status()
+
+    def get_status(self) -> dict[str, Any]:
+        return self.player.status()
 
 
 def main() -> None:
-    root = tk.Tk()
-    MusicPlayer(root)
-    root.mainloop()
+    player = PlayerCore()
+    api = WebAPI(player)
+    index_path = resource_path("ui", "index.html")
+    window = webview.create_window(
+        "NeonGroove - 炫酷音乐播放器",
+        url=index_path.as_uri(),
+        js_api=api,
+        width=1080,
+        height=720,
+    )
+
+    try:
+        webview.start(debug=False)
+    finally:
+        if window:
+            player.shutdown()
 
 
 if __name__ == "__main__":

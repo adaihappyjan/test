@@ -1,6 +1,6 @@
 # NeonGroove 音乐播放器
 
-一个酷炫的桌面音乐播放器原型，使用 Python + Tkinter + pygame 构建。支持播放列表管理、基础播放控制、进度拖动与音量调节，可在 Windows 上通过 PyInstaller 打包为 `.exe`。
+一个酷炫的桌面音乐播放器原型，使用 Python 播放内核 + HTML/CSS/JavaScript 前端（通过 PyWebview 封装）构建。支持文件夹一键导入播放列表、播放控制、进度拖动与音量调节，可在 Windows 上通过 PyInstaller 打包为 `.exe`。
 
 ## 运行
 
@@ -11,12 +11,14 @@ pip install -r requirements.txt
 python music_player.py
 ```
 
+启动后点击「选择音乐文件夹」，即可批量导入目录内的音频文件（支持 MP3/WAV/OGG/FLAC/AAC/M4A）。
+
 ## 打包为 Windows 可执行文件
 
 在 Windows 环境下安装 PyInstaller 后执行：
 
 ```powershell
-pyinstaller --noconsole --onefile --name NeonGroove music_player.py
+pyinstaller --noconsole --onefile --add-data "ui;ui" --name NeonGroove music_player.py
 ```
 
 生成的 `dist/NeonGroove.exe` 即可分发使用。
@@ -29,12 +31,14 @@ pyinstaller --noconsole --onefile --name NeonGroove music_player.py
 2. 在运行详情底部找到 **Artifacts**，点击 `NeonGroove-exe` 即可下载构建好的 `NeonGroove.exe`。
 
 ## 功能特性
-- 支持 MP3/WAV/OGG/FLAC 导入，自动建立播放列表
+- HTML/CSS/JavaScript 打造的炫酷 UI，通过 PyWebview 封装为桌面窗口
+- 选择音乐文件夹自动建立播放列表，显示文件名与元数据标题
 - 播放、暂停/继续、停止、上一曲、下一曲
-- 进度条拖动定位、播放时间显示
-- 音量控制，深色霓虹风格界面
+- 进度条拖动定位、播放时间显示，前后端轮询保持进度同步
+- 音量控制，霓虹风卡片式界面
 
 ## 依赖
 - Python 3.10+
 - pygame 2.5+
 - mutagen 1.47+
+- pywebview 4.4+
